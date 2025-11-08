@@ -1,7 +1,7 @@
 # MqttApp
 
-This is a work in progress mqtt client written in elixir.
-For the moment, it's mostly packet structure utilities.
+This is a work in progress mqtt encoding and decoding library written in elixir.
+The implementation is based on this [RFC](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html)
 
 ## Installation
 
