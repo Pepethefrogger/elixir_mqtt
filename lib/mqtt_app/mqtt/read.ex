@@ -121,10 +121,15 @@ defmodule MqttApp.Protocol.Read do
     {%Variable.Publish{topic_name: topic_name}, rest}
   end
 
-  @spec parse_properties(opcode :: atom, binary) :: {map, rest :: binary}
+  @spec parse_properties(opcode :: atom, binary) :: {map | nil, rest :: binary}
   def parse_properties(opcode, data) do
     {:ok, length, _consumed, rest} = Utils.decode_variable_length(data)
-    parse_properties(opcode, rest, Map.new(), length)
+
+    if length == 0 do
+      {nil, rest}
+    else
+      parse_properties(opcode, rest, Map.new(), length)
+    end
   end
 
   @spec parse_properties(opcode :: atom, data :: binary, map, remaining :: integer) ::
@@ -201,6 +206,10 @@ defmodule MqttApp.Protocol.Read do
 
   defp parse_property(:connect, map, <<23, data, rest::binary>>) do
     {put_if_not_exists!(map, :request_problem_information, data), 2, rest}
+  end
+
+  defp parse_property(:will, map, <<24, data::size(4)-unit(8), rest::binary>>) do
+    {put_if_not_exists!(map, :will_delay_interval, data), 5, rest}
   end
 
   defp parse_property(:connect, map, <<25, data, rest::binary>>) do
@@ -304,37 +313,41 @@ defmodule MqttApp.Protocol.Read do
       variable_header
       |> Map.from_struct()
       |> then(fn map ->
-        for key <- [:will_flag, :user_name_flag, :password_flag], do: {key, Map.get(map, key)}
+        for key <- [:will_properties, :will_flag, :user_name_flag, :password_flag],
+            do: {key, Map.get(map, key)}
       end)
-      |> Enum.reduce({%Payload.Connect{client_identifier: client_identifier}, rest}, fn {k, v},
-                                                                                        {payload,
-                                                                                         rest} ->
-        if v == 1 do
-          case k do
-            :will_flag ->
-              {will_properties, rest} = parse_properties(:will, rest)
-              {:ok, will_topic, _consumed, rest} = Utils.decode_utf8(rest)
-              {:ok, will_payload, _consumed, rest} = Utils.decode_binary(rest)
+      |> Enum.reduce(
+        {%Payload.Connect{client_identifier: client_identifier}, rest},
+        fn {k, v}, {payload, rest} ->
+          if v == 1 do
+            case k do
+              :will_properties ->
+                {will_properties, rest} = parse_properties(:will, rest)
+                {%{payload | will_properties: will_properties}, rest}
 
-              {%{
-                 payload
-                 | will_properties: will_properties,
-                   will_topic: will_topic,
-                   will_payload: will_payload
-               }, rest}
+              :will_flag ->
+                {:ok, will_topic, _consumed, rest} = Utils.decode_utf8(rest)
+                {:ok, will_payload, _consumed, rest} = Utils.decode_binary(rest)
 
-            :user_name_flag ->
-              {:ok, user_name, _consumed, rest} = Utils.decode_utf8(rest)
-              {%{payload | user_name: user_name}, rest}
+                {%{
+                   payload
+                   | will_topic: will_topic,
+                     will_payload: will_payload
+                 }, rest}
 
-            :password_flag ->
-              {:ok, password, _consumed, rest} = Utils.decode_binary(rest)
-              {%{payload | password: password}, rest}
+              :user_name_flag ->
+                {:ok, user_name, _consumed, rest} = Utils.decode_utf8(rest)
+                {%{payload | user_name: user_name}, rest}
+
+              :password_flag ->
+                {:ok, password, _consumed, rest} = Utils.decode_binary(rest)
+                {%{payload | password: password}, rest}
+            end
+          else
+            {payload, rest}
           end
-        else
-          {payload, rest}
         end
-      end)
+      )
 
     <<>> = rest
     payload
@@ -363,7 +376,8 @@ defmodule MqttApp.Protocol.Read do
     %Payload.Suback{}
   end
 
-  def parse_payload(:suback, extra, <<reason_code, rest::binary>>) do
+  def parse_payload(:suback, extra, <<reason_number, rest::binary>>) do
+    reason_code = ReasonCodes.reason_code_to_atom(:suback, reason_number)
     %Payload.Suback{reason_codes: reason_codes} = parse_payload(:suback, extra, rest)
     %Payload.Suback{reason_codes: [reason_code | reason_codes || []]}
   end
@@ -382,7 +396,8 @@ defmodule MqttApp.Protocol.Read do
     %Payload.Unsuback{}
   end
 
-  def parse_payload(:unsuback, extra, <<reason_code, rest::binary>>) do
+  def parse_payload(:unsuback, extra, <<reason_number, rest::binary>>) do
+    reason_code = ReasonCodes.reason_code_to_atom(:unsuback, reason_number)
     %Payload.Unsuback{reason_codes: reason_codes} = parse_payload(:unsuback, extra, rest)
     %Payload.Unsuback{reason_codes: [reason_code | reason_codes || []]}
   end
@@ -393,9 +408,7 @@ defmodule MqttApp.Protocol.Read do
     nil
   end
 
-  @spec parse_packet(data :: binary) ::
-          {opcode :: atom, fixed_flags :: Flags.t(), variable_header :: any, properties :: map,
-           payload :: any}
+  @spec parse_packet(data :: binary) :: MqttApp.Protocol.Packet.t()
   def parse_packet(data) do
     <<fixed_header_flags::binary-size(1), rest::binary>> = data
     {:ok, _, _, rest} = Utils.decode_variable_length(rest)
@@ -414,42 +427,13 @@ defmodule MqttApp.Protocol.Read do
     {properties, rest} = parse_properties(opcode, rest)
     payload = parse_payload(opcode, variable_header, rest)
     {opcode, flags, variable_header, properties, payload}
-  end
 
-  @spec parse_packet(socket :: :gen_tcp.socket()) ::
-          {opcode :: atom, fixed_flags :: Flags.t(), variable_header :: any, properties :: map,
-           payload :: any}
-  def read_packet(socket) do
-    {:ok, <<fixed_header_flags::binary-size(1), length_byte>>} = :gen_tcp.recv(socket, 2)
-    length = take_variable_header(socket, length_byte)
-    {:ok, length, _, <<>>} = Utils.decode_variable_length(length)
-    {opcode, flags} = parse_fixed_header(fixed_header_flags)
-    {:ok, rest} = :gen_tcp.recv(socket, length)
-
-    {variable_header, rest} =
-      case opcode do
-        :publish ->
-          %Flags{qos: qos} = flags
-          parse_variable(:publish, rest, qos)
-
-        _ ->
-          parse_variable(opcode, rest)
-      end
-
-    {properties, rest} = parse_properties(opcode, rest)
-    payload = parse_payload(opcode, variable_header, rest)
-    {opcode, flags, variable_header, properties, payload}
-  end
-
-  defp take_variable_header(socket, byte, count \\ 1)
-  defp take_variable_header(_, _, 5), do: raise("malformed length")
-
-  defp take_variable_header(socket, byte, count) do
-    if Bitwise.band(byte, 128) != 0 do
-      {:ok, next_byte} = :gen_tcp.recv(socket, 1)
-      <<byte, take_variable_header(socket, next_byte, count + 1)::binary>>
-    else
-      <<>>
-    end
+    %MqttApp.Protocol.Packet{
+      opcode: opcode,
+      flags: flags,
+      variable: variable_header,
+      properties: properties,
+      payload: payload
+    }
   end
 end

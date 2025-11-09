@@ -122,6 +122,8 @@ defmodule MqttApp.Protocol.Write do
   end
 
   @spec write_properties(opcode :: atom, properties :: map) :: binary
+  def write_properties(_, nil), do: Utils.encode_variable_length(0)
+
   def write_properties(opcode, props) do
     properties =
       Enum.reduce(props, <<>>, fn {k, v}, acc ->
@@ -186,6 +188,10 @@ defmodule MqttApp.Protocol.Write do
 
   defp write_property(:connect, :request_problem_information, value) do
     <<23, value>>
+  end
+
+  defp write_property(:will, :will_delay_interval, value) do
+    <<24, value::size(4)-unit(8)>>
   end
 
   defp write_property(:connect, :request_response_information, value) do
@@ -340,7 +346,8 @@ defmodule MqttApp.Protocol.Write do
   end
 
   def write_payload(%Payload.Suback{reason_codes: [reason_code | reason_codes]}) do
-    <<reason_code, write_payload(%Payload.Suback{reason_codes: reason_codes})::binary>>
+    number_code = ReasonCodes.atom_to_reason_code(reason_code)
+    <<number_code, write_payload(%Payload.Suback{reason_codes: reason_codes})::binary>>
   end
 
   def write_payload(%Payload.Unsubscribe{topic_filters: []}) do
@@ -358,21 +365,22 @@ defmodule MqttApp.Protocol.Write do
   end
 
   def write_payload(%Payload.Unsuback{reason_codes: [reason_code | reason_codes]}) do
-    <<reason_code, write_payload(%Payload.Unsuback{reason_codes: reason_codes})::binary>>
+    number_code = ReasonCodes.atom_to_reason_code(reason_code)
+    <<number_code, write_payload(%Payload.Unsuback{reason_codes: reason_codes})::binary>>
   end
 
   def write_payload(%Payload.Publish{payload: payload}) do
     payload || <<>>
   end
 
-  @spec write_packet(
-          opcode :: atom,
-          flags :: Flags.t(),
-          variable :: any,
-          properties :: map,
-          payload :: any
-        ) :: binary
-  def write_packet(opcode, flags, variable, properties, payload) do
+  @spec write_packet(MqttApp.Protocol.Packet.t()) :: binary
+  def write_packet(%MqttApp.Protocol.Packet{
+        opcode: opcode,
+        flags: flags,
+        variable: variable,
+        properties: properties,
+        payload: payload
+      }) do
     data = write_variable(variable)
     properties = write_properties(opcode, properties)
     data = <<data::binary, properties::binary>>
@@ -384,16 +392,9 @@ defmodule MqttApp.Protocol.Write do
     data
   end
 
-  @spec write_packet(
-          socket :: :gen_tcp.socket(),
-          opcode :: atom,
-          flags :: Flags.t(),
-          variable :: any,
-          properties :: map,
-          payload :: any
-        ) :: :ok
-  def write_packet(socket, opcode, flags, variable, properties, payload) do
-    data = write_packet(opcode, flags, variable, properties, payload)
+  @spec write_packet(socket :: :gen_tcp.socket(), packet :: MqttApp.Protocol.Packet.t()) :: :ok
+  def write_packet(socket, packet) do
+    data = write_packet(packet)
     :ok = :gen_tcp.send(socket, data)
     :ok
   end

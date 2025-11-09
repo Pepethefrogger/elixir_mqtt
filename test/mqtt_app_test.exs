@@ -17,202 +17,137 @@ end
 defmodule MqttAppTest.Encoding.Packets do
   use ExUnit.Case
 
-  test "connect packet" do
-    # defstruct [:protocol_version, :user_name_flag, :password_flag, :will_retain, :will_qos, :will_flag, :clean_start, :keep_alive] 
-    variable = %MqttApp.Protocol.Variable.Connect{
-      protocol_version: 5,
-      user_name_flag: 0,
-      password_flag: 0,
-      will_retain: 0,
-      will_qos: 0,
-      will_flag: 0,
-      clean_start: 0,
-      keep_alive: 123
+  alias MqttApp.Protocol
+  alias Protocol.Flags
+  alias Protocol.Variable
+  alias Protocol.Payload
+  alias Protocol.Packet
+
+  @packet_examples [
+    %Packet{
+      opcode: :connect,
+      variable: %Variable.Connect{
+        protocol_version: 5,
+        user_name_flag: 1,
+        password_flag: 1,
+        will_retain: 0,
+        will_qos: 0,
+        will_flag: 1,
+        clean_start: 1,
+        keep_alive: 60
+      },
+      payload: %Payload.Connect{
+        client_identifier: "client_123",
+        will_topic: "topic/will",
+        will_payload: "bye",
+        user_name: "user",
+        password: "pass"
+      },
+    },
+    %Packet{
+      opcode: :connack,
+      variable: %Variable.Connack{
+        session_present: 1,
+        connack_reason_code: :success
+      },
+    },
+    %Packet{
+      opcode: :publish,
+      flags: %Flags{dup: 1, qos: 1, retain: 1},
+      variable: %Variable.Publish{
+        topic_name: "topic/test",
+        packet_identifier: 42
+      },
+      payload: %Payload.Publish{payload: "Hello MQTT"},
+    },
+    %Packet{
+      opcode: :puback,
+      variable: %Variable.Puback{
+        packet_identifier: 42,
+        puback_reason_code: :success
+      },
+    },
+    %Packet{
+      opcode: :pubrec,
+      variable: %Variable.Pubrec{
+        packet_identifier: 42,
+        pubrec_reason_code: :success
+      },
+    },
+    %Packet{
+      opcode: :pubrel,
+      variable: %Variable.Pubrel{
+        packet_identifier: 42,
+        pubrel_reason_code: :success
+      },
+    },
+    %Packet{
+      opcode: :pubcomp,
+      variable: %Variable.Pubcomp{
+        packet_identifier: 42,
+        pubcomp_reason_code: :success
+      },
+    },
+    %Packet{
+      opcode: :subscribe,
+      variable: %Variable.Subscribe{
+        packet_identifier: 99
+      },
+      payload: %Payload.Subscribe{topic_filters: [
+        {"topic/1", %Payload.Subscribe.Options{qos: 0, retain_handling: 0, rap: 1, nl: 1}}
+      ]}
+    },
+    %Packet{
+      opcode: :suback,
+      variable: %Variable.Suback{
+        packet_identifier: 99
+      },
+      payload: %Payload.Suback{reason_codes: [:granted_qos_0]}
+    },
+    %Packet{
+      opcode: :unsubscribe,
+      variable: %Variable.Unsubscribe{
+        packet_identifier: 5
+      },
+      payload: %Payload.Unsubscribe{topic_filters: ["topic/1"]}
+    },
+    %Packet{
+      opcode: :unsuback,
+      variable: %Variable.Unsuback{
+        packet_identifier: 5
+      },
+      payload: %Payload.Unsuback{reason_codes: [:success]}
+    },
+    %Packet{
+      opcode: :pingreq,
+    },
+    %Packet{
+      opcode: :pingresp,
+    },
+    %Packet{
+      opcode: :disconnect,
+      variable: %Variable.Disconnect{
+        disconnect_reason_code: :normal_disconnection
+      },
+    },
+    %Packet{
+      opcode: :auth,
+      variable: %Variable.Auth{
+        auth_reason_code: :success
+      },
     }
+  ]
 
-    properties = Map.new()
+  describe "packet encoding/decoding" do
+    for packet = %Packet{opcode: opcode} <- @packet_examples do
+      test "parse and encode #{opcode} packet" do
+        packet = unquote(Macro.escape(packet))
 
-    # defstruct [:client_identifier, :will_properties, :will_topic, :will_payload, :user_name, :password] 
-    payload = %MqttApp.Protocol.Payload.Connect{
-      client_identifier: "im a client bish"
-    }
+        encoded = MqttApp.Protocol.Write.write_packet(packet)
+        decoded = MqttApp.Protocol.Read.parse_packet(encoded)
 
-    packet =
-      MqttApp.Protocol.Write.write_packet(:connect, nil, variable, properties, payload)
-
-    {:connect, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "connack packet" do
-    variable = %MqttApp.Protocol.Variable.Connack{
-      session_present: 0,
-      connack_reason_code: :success
-    }
-
-    properties = Map.new()
-    payload = nil
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(:connack, nil, variable, properties, payload)
-
-    {:connack, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "subscribe packet" do
-    variable = %MqttApp.Protocol.Variable.Subscribe{packet_identifier: 123}
-    properties = Map.new()
-
-    payload = %MqttApp.Protocol.Payload.Subscribe{
-      topic_filters: [
-        {"a/b",
-         %MqttApp.Protocol.Payload.Subscribe.Options{retain_handling: 0, rap: 0, nl: 1, qos: 2}},
-        {"x/y",
-         %MqttApp.Protocol.Payload.Subscribe.Options{retain_handling: 1, rap: 1, nl: 1, qos: 2}}
-      ]
-    }
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(:subscribe, nil, variable, properties, payload)
-
-    {:subscribe, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "suback packet" do
-    variable = %MqttApp.Protocol.Variable.Suback{packet_identifier: 321}
-    properties = Map.new()
-    payload = %MqttApp.Protocol.Payload.Suback{reason_codes: [0, 1, 2]}
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(:suback, nil, variable, properties, payload)
-
-    {:suback, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "unsubscribe packet" do
-    variable = %MqttApp.Protocol.Variable.Unsubscribe{packet_identifier: 555}
-    properties = Map.new()
-    payload = %MqttApp.Protocol.Payload.Unsubscribe{topic_filters: ["u/v", "m/n"]}
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(
-        :unsubscribe,
-        nil,
-        variable,
-        properties,
-        payload
-      )
-
-    {:unsubscribe, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "unsuback packet" do
-    variable = %MqttApp.Protocol.Variable.Unsuback{packet_identifier: 555}
-    properties = Map.new()
-    payload = %MqttApp.Protocol.Payload.Unsuback{reason_codes: [0, 16]}
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(:unsuback, nil, variable, properties, payload)
-
-    {:unsuback, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "publish packet" do
-    flags = %MqttApp.Protocol.Flags{
-      dup: 0,
-      qos: 1,
-      retain: 0
-    }
-
-    variable = %MqttApp.Protocol.Variable.Publish{
-      topic_name: "test/topic",
-      packet_identifier: 42
-    }
-
-    properties = Map.new()
-
-    payload = %MqttApp.Protocol.Payload.Publish{
-      payload: "hello world"
-    }
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(:publish, flags, variable, properties, payload)
-
-    {:publish, ^flags, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "pingreq packet" do
-    variable = nil
-    properties = Map.new()
-    payload = nil
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(:pingreq, nil, variable, properties, payload)
-
-    {:pingreq, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "pingresp packet" do
-    packet = MqttApp.Protocol.Write.write_packet(:pingresp, nil, nil, %{}, nil)
-    {:pingresp, _, nil, %{}, nil} = MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "disconnect packet" do
-    variable = %MqttApp.Protocol.Variable.Disconnect{
-      disconnect_reason_code: :normal_disconnection
-    }
-
-    properties = Map.new()
-    payload = nil
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(:disconnect, nil, variable, properties, payload)
-
-    {:disconnect, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  test "auth packet" do
-    variable = %MqttApp.Protocol.Variable.Auth{auth_reason_code: :success}
-    properties = Map.new()
-    payload = nil
-
-    packet =
-      MqttApp.Protocol.Write.write_packet(:auth, nil, variable, properties, payload)
-
-    {:auth, _, ^variable, ^properties, ^payload} =
-      MqttApp.Protocol.Read.parse_packet(packet)
-  end
-
-  for pkt <- [:puback, :pubrec, :pubrel, :pubcomp] do
-    pkt_str = pkt |> Atom.to_string()
-    module_name = pkt_str |> :string.titlecase() |> String.to_atom()
-    module = Module.concat(MqttApp.Protocol.Variable, module_name)
-    struct_field = (pkt_str <> "_reason_code") |> String.to_atom()
-
-    test "#{pkt} packet" do
-      variable = %unquote(module){:packet_identifier => 99, unquote(struct_field) => :success}
-      properties = Map.new()
-      payload = nil
-
-      packet =
-        MqttApp.Protocol.Write.write_packet(
-          unquote(pkt),
-          nil,
-          variable,
-          properties,
-          payload
-        )
-
-      {unquote(pkt), _, ^variable, ^properties, ^payload} =
-        MqttApp.Protocol.Read.parse_packet(packet)
+        assert packet == decoded
+      end
     end
   end
 end
@@ -300,6 +235,15 @@ defmodule MqttAppTest.Encoding do
       authentication_data: <<1, 2, 3, 4>>,
       reason_string: "reauth",
       user_property: [{"auth_key", "auth_val"}]
+    },
+    will: %{
+      will_delay_interval: 10,
+      payload_format_indicator: 1,
+      message_expiry_interval: 3600,
+      content_type: "application/json",
+      response_topic: "client/response",
+      correlation_data: <<1, 2, 3, 4>>,
+      user_property: [{"key1", "value1"}]
     }
   }
 
