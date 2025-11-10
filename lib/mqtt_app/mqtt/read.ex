@@ -436,4 +436,46 @@ defmodule MqttApp.Protocol.Read do
       payload: payload
     }
   end
+
+  @spec read_packet(:gen_tcp.socket()) :: MqttApp.Protocol.Packet.t()
+  def read_packet(socket) do
+    {:ok, <<fixed_header_flags::binary-size(1), length_byte>>} = :gen_tcp.recv(socket, 2)
+    length = take_variable_header(socket, length_byte)
+    {:ok, length, _, <<>>} = Utils.decode_variable_length(length)
+    {opcode, flags} = parse_fixed_header(fixed_header_flags)
+    {:ok, rest} = :gen_tcp.recv(socket, length)
+
+    {variable_header, rest} =
+      case opcode do
+        :publish ->
+          %Flags{qos: qos} = flags
+          parse_variable(:publish, rest, qos)
+
+        _ ->
+          parse_variable(opcode, rest)
+      end
+
+    {properties, rest} = parse_properties(opcode, rest)
+    payload = parse_payload(opcode, variable_header, rest)
+
+    %MqttApp.Protocol.Packet{
+      opcode: opcode,
+      flags: flags,
+      variable: variable_header,
+      properties: properties,
+      payload: payload
+    }
+  end
+
+  defp take_variable_header(socket, byte, count \\ 1)
+  defp take_variable_header(_, _, 5), do: raise("malformed length")
+
+  defp take_variable_header(socket, byte, count) do
+    if Bitwise.band(byte, 128) != 0 do
+      {:ok, next_byte} = :gen_tcp.recv(socket, 1)
+      <<byte, take_variable_header(socket, next_byte, count + 1)::binary>>
+    else
+      <<>>
+    end
+  end
 end
